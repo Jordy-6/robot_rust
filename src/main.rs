@@ -14,7 +14,15 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
-use std::{io, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, thread, time::Duration};
+use std::{
+    io,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use map::Tile;
 use robot::{RobotType, World};
@@ -27,7 +35,7 @@ fn main() -> Result<(), io::Error> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let world = Arc::new(Mutex::new(World::new(60, 20)));
+    let world = Arc::new(Mutex::new(World::new(70, 30)));
     let running = Arc::new(AtomicBool::new(true));
 
     let sim_world = Arc::clone(&world);
@@ -49,14 +57,12 @@ fn main() -> Result<(), io::Error> {
         })?;
 
         // Gérer les entrées utilisateur : toute pression de touche quitte
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                // On quitte peu importe la touche (sauf si c'est un simple relâchement)
-                if key.kind == event::KeyEventKind::Press {
-                    running.store(false, Ordering::Relaxed);
-                    break;
-                }
-            }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == event::KeyEventKind::Press
+        {
+            running.store(false, Ordering::Relaxed);
+            break;
         }
     }
 
@@ -93,7 +99,9 @@ fn ui(f: &mut Frame, world: &World) {
             // 1. Vérifier si un robot est sur la case
             if let Some(robot) = world.robot_at(x, y) {
                 match robot.robot_type {
-                    RobotType::Scout => spans.push(Span::styled("x", Style::default().fg(Color::Red))),
+                    RobotType::Scout => {
+                        spans.push(Span::styled("x", Style::default().fg(Color::Red)))
+                    }
                     RobotType::Collector => {
                         spans.push(Span::styled("o", Style::default().fg(Color::Magenta)))
                     }
@@ -114,14 +122,16 @@ fn ui(f: &mut Frame, world: &World) {
     }
 
     // Création du bloc d'interface
-    let map_paragraph = Paragraph::new(lines).block(
-        Block::default()
-            .title(" Carte ")
-            .borders(Borders::ALL),
-    );
+    let map_paragraph =
+        Paragraph::new(lines).block(Block::default().title(" Carte ").borders(Borders::ALL));
 
     // Affichage au centre de l'écran (simplifié)
-    let render_area = Rect::new(0, 3, world.map.width as u16 + 2, world.map.height as u16 + 2);
+    let render_area = Rect::new(
+        0,
+        3,
+        world.map.width as u16 + 2,
+        world.map.height as u16 + 2,
+    );
 
     // On s'assure de ne pas dessiner hors de l'écran
     if render_area.width <= size.width && render_area.bottom() <= size.height {

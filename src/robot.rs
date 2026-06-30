@@ -85,7 +85,12 @@ impl Robot {
         self.x == map.base.x && self.y == map.base.y
     }
 
-    pub fn update(&mut self, map: &mut Map, known_resources: &[ResourceDiscovery], sender: &Sender<RobotMessage>) -> Option<(u32, u32)> {
+    pub fn update(
+        &mut self,
+        map: &mut Map,
+        known_resources: &[ResourceDiscovery],
+        sender: &Sender<RobotMessage>,
+    ) -> Option<(u32, u32)> {
         self.scan(map, sender);
 
         let delivered = match self.robot_type {
@@ -105,41 +110,35 @@ impl Robot {
     // il envoie un message au canal (sender) pour que World le traite.
     // C'est la base de la communication asynchrone entre robots.
     fn scan(&mut self, map: &Map, sender: &Sender<RobotMessage>) {
-    for dy in -1..=1 {
-        for dx in -1..=1 {
-            let x = self.x as isize + dx;
-            let y = self.y as isize + dy;
-            if !map.in_bounds(x, y) {
-                continue;
-            }
-            let x = x as usize;
-            let y = y as usize;
-            match map.grid[y][x] {
-                Tile::Energy(_) => {
-                    let _ = sender.send(RobotMessage::ResourceFound(ResourceDiscovery {
-                        position: Point { x, y },
-                        kind: ResourceKind::Energy,
-                    }));
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let x = self.x as isize + dx;
+                let y = self.y as isize + dy;
+                if !map.in_bounds(x, y) {
+                    continue;
                 }
-                Tile::Crystal(_) => {
-                    let _ = sender.send(RobotMessage::ResourceFound(ResourceDiscovery {
-                        position: Point { x, y },
-                        kind: ResourceKind::Crystal,
-                    }));
+                let x = x as usize;
+                let y = y as usize;
+                match map.grid[y][x] {
+                    Tile::Energy(_) => {
+                        let _ = sender.send(RobotMessage::ResourceFound(ResourceDiscovery {
+                            position: Point { x, y },
+                            kind: ResourceKind::Energy,
+                        }));
+                    }
+                    Tile::Crystal(_) => {
+                        let _ = sender.send(RobotMessage::ResourceFound(ResourceDiscovery {
+                            position: Point { x, y },
+                            kind: ResourceKind::Crystal,
+                        }));
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
-}
 
-    fn remember_resource(known_resources: &mut Vec<ResourceDiscovery>, discovery: ResourceDiscovery) {
-        if !known_resources.iter().any(|item| item.position == discovery.position) {
-            known_resources.push(discovery);
-        }
-    }
-
-    fn step_scout(&mut self, map: &Map, known_resources: &mut Vec<ResourceDiscovery>) {
+    fn step_scout(&mut self, map: &Map, sender: &Sender<RobotMessage>) {
         let mut rng = rand::rng();
         let mut candidates = self.walkable_neighbors(map);
         if candidates.is_empty() {
@@ -161,10 +160,15 @@ impl Robot {
 
         self.move_to(next);
         self.visited.insert(next);
-        self.scan(map, known_resources);
+        self.scan(map, sender);
     }
 
-    fn step_collector(&mut self, map: &mut Map, known_resources: &mut Vec<ResourceDiscovery>) -> Option<(u32, u32)> {
+    fn step_collector(
+        &mut self,
+        map: &mut Map,
+        known_resources: &[ResourceDiscovery],
+        sender: &Sender<RobotMessage>,
+    ) -> Option<(u32, u32)> {
         if self.cargo_total() >= 12 {
             self.mode = CollectorMode::ReturningBase;
         }
@@ -187,7 +191,7 @@ impl Robot {
                 }
             }
             CollectorMode::ToResource(target) => {
-                if let Some(resource_index) = known_resources.iter().position(|entry| entry.position == target) {
+                if known_resources.iter().any(|entry| entry.position == target) {
                     if self.position() == target {
                         if let Some(kind) = map.take_resource_unit(target.x, target.y) {
                             match kind {
@@ -238,10 +242,19 @@ impl Robot {
         self.visited.insert(next);
     }
 
-    fn choose_best_known_resource(&self, map: &Map, known_resources: &[ResourceDiscovery]) -> Option<Point> {
+    fn choose_best_known_resource(
+        &self,
+        map: &Map,
+        known_resources: &[ResourceDiscovery],
+    ) -> Option<Point> {
         known_resources
             .iter()
-            .filter(|resource| !matches!(map.grid[resource.position.y][resource.position.x], Tile::Empty))
+            .filter(|resource| {
+                !matches!(
+                    map.grid[resource.position.y][resource.position.x],
+                    Tile::Empty
+                )
+            })
             .min_by_key(|resource| self.manhattan(resource.position))
             .map(|resource| resource.position)
     }
@@ -374,6 +387,20 @@ impl World {
         }
     }
 
+    pub fn summary(&self) -> String {
+        format!(
+            " Énergie: {}  |  Cristaux: {}  |  Ressources connues: {}  |  Tick: {}",
+            self.total_energy,
+            self.total_crystals,
+            self.known_resources.len(),
+            self.tick
+        )
+    }
+
+    pub fn robot_at(&self, x: usize, y: usize) -> Option<&Robot> {
+        self.robots.iter().find(|r| r.x == x && r.y == y)
+    }
+
     /// Une étape de simulation : chaque robot agit, puis World lit
     /// sa boîte aux lettres (receiver) et met à jour l'état centralisé.
     pub fn tick(&mut self) {
@@ -394,7 +421,11 @@ impl World {
         while let Ok(msg) = self.receiver.try_recv() {
             match msg {
                 RobotMessage::ResourceFound(discovery) => {
-                    if !self.known_resources.iter().any(|r| r.position == discovery.position) {
+                    if !self
+                        .known_resources
+                        .iter()
+                        .any(|r| r.position == discovery.position)
+                    {
                         self.known_resources.push(discovery);
                     }
                 }
@@ -407,7 +438,10 @@ impl World {
         // Nettoyage de sécurité : retire toute ressource connue dont
         // la case est redevenue vide sur la carte (cas limite épuisement)
         self.known_resources.retain(|resource| {
-            !matches!(self.map.grid[resource.position.y][resource.position.x], Tile::Empty)
+            !matches!(
+                self.map.grid[resource.position.y][resource.position.x],
+                Tile::Empty
+            )
         });
     }
 }
