@@ -2,22 +2,22 @@ mod map;
 mod robot;
 
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
-use std::{io, time::Duration};
+use std::{io, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, thread, time::Duration};
 
-use map::{Map, Tile};
-use robot::{RenderRobot, RobotType};
+use map::Tile;
+use robot::{RobotType, World};
 
 fn main() -> Result<(), io::Error> {
     // Configuration du terminal
@@ -27,37 +27,40 @@ fn main() -> Result<(), io::Error> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Initialisation de l'état du jeu
-    let map = Map::new(60, 20); // Taille de la carte
+    let world = Arc::new(Mutex::new(World::new(60, 20)));
+    let running = Arc::new(AtomicBool::new(true));
 
-    // On place deux robots factices pour tester l'affichage
-    let robots = vec![
-        RenderRobot {
-            x: 30,
-            y: 10,
-            r_type: RobotType::Scout,
-        },
-        RenderRobot {
-            x: 31,
-            y: 10,
-            r_type: RobotType::Collector,
-        },
-    ];
+    let sim_world = Arc::clone(&world);
+    let sim_running = Arc::clone(&running);
+    let simulation = thread::spawn(move || {
+        while sim_running.load(Ordering::Relaxed) {
+            if let Ok(mut world) = sim_world.lock() {
+                world.tick();
+            }
+            thread::sleep(Duration::from_millis(120));
+        }
+    });
 
-    // Boucle principale de l'application
     loop {
-        terminal.draw(|f| ui(f, &map, &robots))?;
+        terminal.draw(|f| {
+            if let Ok(world) = world.lock() {
+                ui(f, &world);
+            }
+        })?;
 
         // Gérer les entrées utilisateur : toute pression de touche quitte
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 // On quitte peu importe la touche (sauf si c'est un simple relâchement)
                 if key.kind == event::KeyEventKind::Press {
+                    running.store(false, Ordering::Relaxed);
                     break;
                 }
             }
         }
     }
+
+    let _ = simulation.join();
 
     // Restauration du terminal
     disable_raw_mode()?;
@@ -67,32 +70,42 @@ fn main() -> Result<(), io::Error> {
     Ok(())
 }
 
-fn ui(f: &mut Frame, map: &Map, robots: &[RenderRobot]) {
-    let size = f.size();
+fn ui(f: &mut Frame, world: &World) {
+    let size = f.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(size);
+
+    let stats = Paragraph::new(world.summary()).block(
+        Block::default()
+            .title(" Resource Collection Simulation ")
+            .borders(Borders::ALL),
+    );
+    f.render_widget(stats, chunks[0]);
+
     let mut lines = Vec::new();
 
     // Rendu de la carte et des robots
-    for y in 0..map.height {
+    for y in 0..world.map.height {
         let mut spans = Vec::new();
-        for x in 0..map.width {
+        for x in 0..world.map.width {
             // 1. Vérifier si un robot est sur la case
-            if let Some(robot) = robots.iter().find(|r| r.x == x && r.y == y) {
-                match robot.r_type {
-                    RobotType::Scout => {
-                        spans.push(Span::styled("x", Style::default().fg(Color::Red)))
-                    } // [cite: 136]
+            if let Some(robot) = world.robot_at(x, y) {
+                match robot.robot_type {
+                    RobotType::Scout => spans.push(Span::styled("x", Style::default().fg(Color::Red))),
                     RobotType::Collector => {
                         spans.push(Span::styled("o", Style::default().fg(Color::Magenta)))
-                    } // [cite: 137]
+                    }
                 }
             } else {
                 // 2. Sinon, afficher l'élément de la carte avec les couleurs requises
-                let (symbol, color) = match map.grid[y][x] {
+                let (symbol, color) = match world.map.grid[y][x] {
                     Tile::Empty => (".", Color::DarkGray),
-                    Tile::Obstacle => ("0", Color::LightCyan), // [cite: 132]
-                    Tile::Energy(_) => ("E", Color::Green),    // [cite: 133]
-                    Tile::Crystal(_) => ("C", Color::LightMagenta), // [cite: 134]
-                    Tile::Base => ("#", Color::LightGreen),    // [cite: 135]
+                    Tile::Obstacle => ("O", Color::LightCyan),
+                    Tile::Energy(_) => ("E", Color::Green),
+                    Tile::Crystal(_) => ("C", Color::LightMagenta),
+                    Tile::Base => ("#", Color::LightGreen),
                 };
                 spans.push(Span::styled(symbol, Style::default().fg(color)));
             }
@@ -103,15 +116,15 @@ fn ui(f: &mut Frame, map: &Map, robots: &[RenderRobot]) {
     // Création du bloc d'interface
     let map_paragraph = Paragraph::new(lines).block(
         Block::default()
-            .title(" Simulation de Collecte de Ressources ")
+            .title(" Carte ")
             .borders(Borders::ALL),
-    ); // [cite: 83]
+    );
 
     // Affichage au centre de l'écran (simplifié)
-    let render_area = Rect::new(0, 0, map.width as u16 + 2, map.height as u16 + 2);
+    let render_area = Rect::new(0, 3, world.map.width as u16 + 2, world.map.height as u16 + 2);
 
     // On s'assure de ne pas dessiner hors de l'écran
-    if render_area.width <= size.width && render_area.height <= size.height {
+    if render_area.width <= size.width && render_area.bottom() <= size.height {
         f.render_widget(map_paragraph, render_area);
     }
 }
