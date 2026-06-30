@@ -100,37 +100,38 @@ impl Robot {
         delivered
     }
 
-    fn scan(&mut self, map: &Map, known_resources: &mut Vec<ResourceDiscovery>) {
-        for dy in -1..=1 {
-            for dx in -1..=1 {
-                let x = self.x as isize + dx;
-                let y = self.y as isize + dy;
-                if !map.in_bounds(x, y) {
-                    continue;
+    // Le robot regarde les 8 cases autour de lui (son "champ de vision").
+    // Si une ressource y est détectée, il ne la stocke plus directement —
+    // il envoie un message au canal (sender) pour que World le traite.
+    // C'est la base de la communication asynchrone entre robots.
+    fn scan(&mut self, map: &Map, sender: &Sender<RobotMessage>) {
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let x = self.x as isize + dx;
+            let y = self.y as isize + dy;
+            if !map.in_bounds(x, y) {
+                continue;
+            }
+            let x = x as usize;
+            let y = y as usize;
+            match map.grid[y][x] {
+                Tile::Energy(_) => {
+                    let _ = sender.send(RobotMessage::ResourceFound(ResourceDiscovery {
+                        position: Point { x, y },
+                        kind: ResourceKind::Energy,
+                    }));
                 }
-
-                let x = x as usize;
-                let y = y as usize;
-                match map.grid[y][x] {
-                    Tile::Energy(_) => Self::remember_resource(
-                        known_resources,
-                        ResourceDiscovery {
-                            position: Point { x, y },
-                            kind: ResourceKind::Energy,
-                        },
-                    ),
-                    Tile::Crystal(_) => Self::remember_resource(
-                        known_resources,
-                        ResourceDiscovery {
-                            position: Point { x, y },
-                            kind: ResourceKind::Crystal,
-                        },
-                    ),
-                    _ => {}
+                Tile::Crystal(_) => {
+                    let _ = sender.send(RobotMessage::ResourceFound(ResourceDiscovery {
+                        position: Point { x, y },
+                        kind: ResourceKind::Crystal,
+                    }));
                 }
+                _ => {}
             }
         }
     }
+}
 
     fn remember_resource(known_resources: &mut Vec<ResourceDiscovery>, discovery: ResourceDiscovery) {
         if !known_resources.iter().any(|item| item.position == discovery.position) {
