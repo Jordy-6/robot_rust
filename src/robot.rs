@@ -4,6 +4,14 @@ use rand::RngExt;
 
 use crate::map::{Map, Tile};
 
+use std::sync::mpsc::{self, Receiver, Sender};
+
+#[derive(Clone, Debug)]
+pub enum RobotMessage {
+    ResourceFound(ResourceDiscovery),
+    ResourceDepleted(Point),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Point {
     pub x: usize,
@@ -77,22 +85,31 @@ impl Robot {
         self.x == map.base.x && self.y == map.base.y
     }
 
-    pub fn update(&mut self, map: &mut Map, known_resources: &mut Vec<ResourceDiscovery>) -> Option<(u32, u32)> {
-        self.scan(map, known_resources);
+    pub fn update(
+        &mut self,
+        map: &mut Map,
+        known_resources: &[ResourceDiscovery],
+        sender: &Sender<RobotMessage>,
+    ) -> Option<(u32, u32)> {
+        self.scan(map, sender);
 
         let delivered = match self.robot_type {
             RobotType::Scout => {
-                self.step_scout(map, known_resources);
+                self.step_scout(map, sender);
                 None
             }
-            RobotType::Collector => self.step_collector(map, known_resources),
+            RobotType::Collector => self.step_collector(map, known_resources, sender),
         };
 
-        self.scan(map, known_resources);
+        self.scan(map, sender);
         delivered
     }
 
-    fn scan(&mut self, map: &Map, known_resources: &mut Vec<ResourceDiscovery>) {
+    // Le robot regarde les 8 cases autour de lui (son "champ de vision").
+    // Si une ressource y est détectée, il ne la stocke plus directement —
+    // il envoie un message au canal (sender) pour que World le traite.
+    // C'est la base de la communication asynchrone entre robots.
+    fn scan(&mut self, map: &Map, sender: &Sender<RobotMessage>) {
         for dy in -1..=1 {
             for dx in -1..=1 {
                 let x = self.x as isize + dx;
@@ -100,37 +117,28 @@ impl Robot {
                 if !map.in_bounds(x, y) {
                     continue;
                 }
-
                 let x = x as usize;
                 let y = y as usize;
                 match map.grid[y][x] {
-                    Tile::Energy(_) => Self::remember_resource(
-                        known_resources,
-                        ResourceDiscovery {
+                    Tile::Energy(_) => {
+                        let _ = sender.send(RobotMessage::ResourceFound(ResourceDiscovery {
                             position: Point { x, y },
                             kind: ResourceKind::Energy,
-                        },
-                    ),
-                    Tile::Crystal(_) => Self::remember_resource(
-                        known_resources,
-                        ResourceDiscovery {
+                        }));
+                    }
+                    Tile::Crystal(_) => {
+                        let _ = sender.send(RobotMessage::ResourceFound(ResourceDiscovery {
                             position: Point { x, y },
                             kind: ResourceKind::Crystal,
-                        },
-                    ),
+                        }));
+                    }
                     _ => {}
                 }
             }
         }
     }
 
-    fn remember_resource(known_resources: &mut Vec<ResourceDiscovery>, discovery: ResourceDiscovery) {
-        if !known_resources.iter().any(|item| item.position == discovery.position) {
-            known_resources.push(discovery);
-        }
-    }
-
-    fn step_scout(&mut self, map: &Map, known_resources: &mut Vec<ResourceDiscovery>) {
+    fn step_scout(&mut self, map: &Map, sender: &Sender<RobotMessage>) {
         let mut rng = rand::rng();
         let mut candidates = self.walkable_neighbors(map);
         if candidates.is_empty() {
@@ -152,10 +160,15 @@ impl Robot {
 
         self.move_to(next);
         self.visited.insert(next);
-        self.scan(map, known_resources);
+        self.scan(map, sender);
     }
 
-    fn step_collector(&mut self, map: &mut Map, known_resources: &mut Vec<ResourceDiscovery>) -> Option<(u32, u32)> {
+    fn step_collector(
+        &mut self,
+        map: &mut Map,
+        known_resources: &[ResourceDiscovery],
+        sender: &Sender<RobotMessage>,
+    ) -> Option<(u32, u32)> {
         if self.cargo_total() >= 12 {
             self.mode = CollectorMode::ReturningBase;
         }
@@ -178,7 +191,7 @@ impl Robot {
                 }
             }
             CollectorMode::ToResource(target) => {
-                if let Some(resource_index) = known_resources.iter().position(|entry| entry.position == target) {
+                if known_resources.iter().any(|entry| entry.position == target) {
                     if self.position() == target {
                         if let Some(kind) = map.take_resource_unit(target.x, target.y) {
                             match kind {
@@ -187,7 +200,7 @@ impl Robot {
                                 _ => {}
                             }
                         } else {
-                            known_resources.remove(resource_index);
+                            let _ = sender.send(RobotMessage::ResourceDepleted(target));
                             self.mode = CollectorMode::Exploring;
                         }
                     } else if let Some(next) = self.next_step_towards(map, target) {
@@ -229,10 +242,19 @@ impl Robot {
         self.visited.insert(next);
     }
 
-    fn choose_best_known_resource(&self, map: &Map, known_resources: &[ResourceDiscovery]) -> Option<Point> {
+    fn choose_best_known_resource(
+        &self,
+        map: &Map,
+        known_resources: &[ResourceDiscovery],
+    ) -> Option<Point> {
         known_resources
             .iter()
-            .filter(|resource| !matches!(map.grid[resource.position.y][resource.position.x], Tile::Empty))
+            .filter(|resource| {
+                !matches!(
+                    map.grid[resource.position.y][resource.position.x],
+                    Tile::Empty
+                )
+            })
             .min_by_key(|resource| self.manhattan(resource.position))
             .map(|resource| resource.position)
     }
@@ -327,6 +349,7 @@ fn neighbors_of(point: Point, map: &Map) -> Vec<Point> {
 }
 
 #[derive(Debug)]
+
 pub struct World {
     pub map: Map,
     pub robots: Vec<Robot>,
@@ -334,12 +357,15 @@ pub struct World {
     pub total_energy: u32,
     pub total_crystals: u32,
     tick: u64,
+    sender: Sender<RobotMessage>,
+    receiver: Receiver<RobotMessage>,
 }
 
 impl World {
     pub fn new(width: usize, height: usize) -> Self {
         let map = Map::new(width, height);
         let base = map.base;
+        let (sender, receiver) = mpsc::channel();
 
         let robots = vec![
             Robot::new(base.x, base.y, RobotType::Scout),
@@ -356,36 +382,66 @@ impl World {
             total_energy: 0,
             total_crystals: 0,
             tick: 0,
+            sender,
+            receiver,
         }
     }
 
+    pub fn summary(&self) -> String {
+        format!(
+            " Énergie: {}  |  Cristaux: {}  |  Ressources connues: {}  |  Tick: {}",
+            self.total_energy,
+            self.total_crystals,
+            self.known_resources.len(),
+            self.tick
+        )
+    }
+
+    pub fn robot_at(&self, x: usize, y: usize) -> Option<&Robot> {
+        self.robots.iter().find(|r| r.x == x && r.y == y)
+    }
+
+    /// Une étape de simulation : chaque robot agit, puis World lit
+    /// sa boîte aux lettres (receiver) et met à jour l'état centralisé.
     pub fn tick(&mut self) {
         self.tick = self.tick.wrapping_add(1);
-        let map = &mut self.map;
-        let known_resources = &mut self.known_resources;
+
+        // Copie en lecture seule pour éviter un conflit d'emprunt avec
+        // l'itération mutable sur self.robots juste en dessous.
+        let known = self.known_resources.clone();
 
         for robot in &mut self.robots {
-            if let Some((energy, crystals)) = robot.update(map, known_resources) {
+            if let Some((energy, crystals)) = robot.update(&mut self.map, &known, &self.sender) {
                 self.total_energy = self.total_energy.saturating_add(energy);
                 self.total_crystals = self.total_crystals.saturating_add(crystals);
             }
         }
 
+        // Traite tous les messages reçus ce tick (non bloquant)
+        while let Ok(msg) = self.receiver.try_recv() {
+            match msg {
+                RobotMessage::ResourceFound(discovery) => {
+                    if !self
+                        .known_resources
+                        .iter()
+                        .any(|r| r.position == discovery.position)
+                    {
+                        self.known_resources.push(discovery);
+                    }
+                }
+                RobotMessage::ResourceDepleted(point) => {
+                    self.known_resources.retain(|r| r.position != point);
+                }
+            }
+        }
+
+        // Nettoyage de sécurité : retire toute ressource connue dont
+        // la case est redevenue vide sur la carte (cas limite épuisement)
         self.known_resources.retain(|resource| {
-            !matches!(self.map.grid[resource.position.y][resource.position.x], Tile::Empty)
+            !matches!(
+                self.map.grid[resource.position.y][resource.position.x],
+                Tile::Empty
+            )
         });
-    }
-
-    pub fn robot_at(&self, x: usize, y: usize) -> Option<&Robot> {
-        self.robots.iter().find(|robot| robot.x == x && robot.y == y)
-    }
-
-    pub fn summary(&self) -> String {
-        format!(
-            "Energy collected: {}   Crystals collected: {}   Discovered resources: {}",
-            self.total_energy,
-            self.total_crystals,
-            self.known_resources.len(),
-        )
     }
 }
