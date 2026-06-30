@@ -25,21 +25,22 @@ cargo run
 Quitter la simulation : n'importe quelle touche du clavier.
 
 Build optimisé (recommandé si la simulation rame) :
+
 ```bash
 cargo run --release
 ```
 
 ## Légende visuelle
 
-| Symbole | Élément       | Couleur       |
-|---------|---------------|---------------|
-| `O`     | Obstacle      | Cyan clair    |
-| `E`     | Énergie       | Vert          |
-| `C`     | Cristal       | Magenta clair |
-| `#`     | Base          | Vert clair    |
-| `x`     | Scout         | Rouge         |
-| `o`     | Collector     | Magenta       |
-| `.`     | Case vide     | Gris foncé    |
+| Symbole | Élément   | Couleur       |
+| ------- | --------- | ------------- |
+| `O`     | Obstacle  | Cyan clair    |
+| `E`     | Énergie   | Vert          |
+| `C`     | Cristal   | Magenta clair |
+| `#`     | Base      | Vert clair    |
+| `x`     | Scout     | Rouge         |
+| `o`     | Collector | Magenta       |
+| `.`     | Case vide | Gris foncé    |
 
 ## Architecture du code
 
@@ -56,6 +57,7 @@ src/
 - **`Robot`** : position, type, mode (Exploring / ToResource / ReturningBase), cargo
 - **`World`** : orchestre la carte + les robots + les statistiques globales
 - **Concurrence** : `Arc<Mutex<World>>` partagé entre le thread de simulation (tick toutes les 120ms) et le thread principal (rendu + input)
+- **Communication inter-robots** : chaque robot envoie des `RobotMessage` (ResourceFound, ResourceDepleted) via un `mpsc::channel` plutôt que de modifier directement un état partagé ; `World` lit les messages reçus à chaque tick et met à jour `known_resources`
 
 ## Développement — workflow Git
 
@@ -86,7 +88,7 @@ cargo test             # lance les tests unitaires
 - [x] Collectors : pathfinding BFS + collecte + retour base
 - [x] Rendu Ratatui en couleur
 - [x] Architecture concurrente (Arc/Mutex + threads)
-- [ ] Communication asynchrone via channels (actuellement mémoire partagée)
+- [x] Communication asynchrone via channels (actuellement mémoire partagée)
 - [ ] Gestion des collisions entre robots
 - [ ] Scouts mémorisent les obstacles découverts
 - [ ] Documentation des fonctions (rustdoc)
