@@ -4,6 +4,14 @@ use rand::RngExt;
 
 use crate::map::{Map, Tile};
 
+use std::sync::mpsc::Sender;
+
+#[derive(Clone, Debug)]
+pub enum RobotMessage {
+    ResourceFound(ResourceDiscovery),
+    ResourceDepleted(Point),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Point {
     pub x: usize,
