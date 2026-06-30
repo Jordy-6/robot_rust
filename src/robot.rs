@@ -85,18 +85,18 @@ impl Robot {
         self.x == map.base.x && self.y == map.base.y
     }
 
-    pub fn update(&mut self, map: &mut Map, known_resources: &mut Vec<ResourceDiscovery>) -> Option<(u32, u32)> {
-        self.scan(map, known_resources);
+    pub fn update(&mut self, map: &mut Map, known_resources: &[ResourceDiscovery], sender: &Sender<RobotMessage>) -> Option<(u32, u32)> {
+        self.scan(map, sender);
 
         let delivered = match self.robot_type {
             RobotType::Scout => {
-                self.step_scout(map, known_resources);
+                self.step_scout(map, sender);
                 None
             }
-            RobotType::Collector => self.step_collector(map, known_resources),
+            RobotType::Collector => self.step_collector(map, known_resources, sender),
         };
 
-        self.scan(map, known_resources);
+        self.scan(map, sender);
         delivered
     }
 
@@ -196,7 +196,7 @@ impl Robot {
                                 _ => {}
                             }
                         } else {
-                            known_resources.remove(resource_index);
+                            let _ = sender.send(RobotMessage::ResourceDepleted(target));
                             self.mode = CollectorMode::Exploring;
                         }
                     } else if let Some(next) = self.next_step_towards(map, target) {
