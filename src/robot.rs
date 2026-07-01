@@ -10,6 +10,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 pub enum RobotMessage {
     ResourceFound(ResourceDiscovery),
     ResourceDepleted(Point),
+    ObstacleFound(Point),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -131,6 +132,9 @@ impl Robot {
                             position: Point { x, y },
                             kind: ResourceKind::Crystal,
                         }));
+                    }
+                    Tile::Obstacle => {
+                        let _ = sender.send(RobotMessage::ObstacleFound(Point { x, y }));
                     }
                     _ => {}
                 }
@@ -354,6 +358,7 @@ pub struct World {
     pub map: Map,
     pub robots: Vec<Robot>,
     pub known_resources: Vec<ResourceDiscovery>,
+    pub known_obstacles: Vec<Point>,
     pub total_energy: u32,
     pub total_crystals: u32,
     tick: u64,
@@ -379,6 +384,7 @@ impl World {
             map,
             robots,
             known_resources: Vec::new(),
+            known_obstacles: Vec::new(),
             total_energy: 0,
             total_crystals: 0,
             tick: 0,
@@ -389,10 +395,11 @@ impl World {
 
     pub fn summary(&self) -> String {
         format!(
-            " Énergie: {}  |  Cristaux: {}  |  Ressources connues: {}  |  Tick: {}",
+            " Énergie: {}  |  Cristaux: {}  |  Ressources connues: {}  |  Obstacles connus: {}  |  Tick: {}",
             self.total_energy,
             self.total_crystals,
             self.known_resources.len(),
+            self.known_obstacles.len(),
             self.tick
         )
     }
@@ -431,6 +438,11 @@ impl World {
                 }
                 RobotMessage::ResourceDepleted(point) => {
                     self.known_resources.retain(|r| r.position != point);
+                }
+                RobotMessage::ObstacleFound(point) => {
+                    if !self.known_obstacles.contains(&point) {
+                        self.known_obstacles.push(point);
+                    }
                 }
             }
         }
