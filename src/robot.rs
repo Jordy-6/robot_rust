@@ -91,15 +91,16 @@ impl Robot {
         map: &mut Map,
         known_resources: &[ResourceDiscovery],
         sender: &Sender<RobotMessage>,
+        occupied: &mut HashSet<Point>,
     ) -> Option<(u32, u32)> {
         self.scan(map, sender);
 
         let delivered = match self.robot_type {
             RobotType::Scout => {
-                self.step_scout(map, sender);
+                self.step_scout(map, sender, occupied);
                 None
             }
-            RobotType::Collector => self.step_collector(map, known_resources, sender),
+            RobotType::Collector => self.step_collector(map, known_resources, sender, occupied),
         };
 
         self.scan(map, sender);
@@ -142,9 +143,14 @@ impl Robot {
         }
     }
 
-    fn step_scout(&mut self, map: &Map, sender: &Sender<RobotMessage>) {
+    fn step_scout(
+        &mut self,
+        map: &Map,
+        sender: &Sender<RobotMessage>,
+        occupied: &mut HashSet<Point>,
+    ) {
         let mut rng = rand::rng();
-        let mut candidates = self.walkable_neighbors(map);
+        let mut candidates = self.walkable_neighbors(map, occupied);
         if candidates.is_empty() {
             return;
         }
@@ -162,8 +168,9 @@ impl Robot {
             candidates[rng.random_range(0..candidates.len())]
         };
 
-        self.move_to(next);
-        self.visited.insert(next);
+        if self.try_move_to(next, occupied) {
+            self.visited.insert(next);
+        }
         self.scan(map, sender);
     }
 
@@ -172,6 +179,7 @@ impl Robot {
         map: &mut Map,
         known_resources: &[ResourceDiscovery],
         sender: &Sender<RobotMessage>,
+        occupied: &mut HashSet<Point>,
     ) -> Option<(u32, u32)> {
         if self.cargo_total() >= 12 {
             self.mode = CollectorMode::ReturningBase;
@@ -190,8 +198,8 @@ impl Robot {
 
         match self.mode {
             CollectorMode::ReturningBase => {
-                if let Some(next) = self.next_step_towards(map, map.base) {
-                    self.move_to(next);
+                if let Some(next) = self.next_step_towards(map, map.base, occupied) {
+                    self.try_move_to(next, occupied);
                 }
             }
             CollectorMode::ToResource(target) => {
@@ -207,8 +215,8 @@ impl Robot {
                             let _ = sender.send(RobotMessage::ResourceDepleted(target));
                             self.mode = CollectorMode::Exploring;
                         }
-                    } else if let Some(next) = self.next_step_towards(map, target) {
-                        self.move_to(next);
+                    } else if let Some(next) = self.next_step_towards(map, target, occupied) {
+                        self.try_move_to(next, occupied);
                     } else {
                         self.mode = CollectorMode::Exploring;
                     }
@@ -219,13 +227,13 @@ impl Robot {
             CollectorMode::Exploring => {
                 if let Some(target) = self.choose_best_known_resource(map, known_resources) {
                     self.mode = CollectorMode::ToResource(target);
-                    if let Some(next) = self.next_step_towards(map, target) {
-                        self.move_to(next);
+                    if let Some(next) = self.next_step_towards(map, target, occupied) {
+                        self.try_move_to(next, occupied);
                     }
                 } else if self.is_at_base(map) {
-                    self.patrol_near_base(map);
-                } else if let Some(next) = self.next_step_towards(map, map.base) {
-                    self.move_to(next);
+                    self.patrol_near_base(map, occupied);
+                } else if let Some(next) = self.next_step_towards(map, map.base, occupied) {
+                    self.try_move_to(next, occupied);
                 }
             }
         }
@@ -233,17 +241,18 @@ impl Robot {
         None
     }
 
-    fn patrol_near_base(&mut self, map: &Map) {
+    fn patrol_near_base(&mut self, map: &Map, occupied: &mut HashSet<Point>) {
         let mut rng = rand::rng();
-        let mut options = self.walkable_neighbors(map);
+        let mut options = self.walkable_neighbors(map, occupied);
         if options.is_empty() {
             return;
         }
 
         options.sort_by_key(|point| self.visited.contains(point));
         let next = options[rng.random_range(0..options.len())];
-        self.move_to(next);
-        self.visited.insert(next);
+        if self.try_move_to(next, occupied) {
+            self.visited.insert(next);
+        }
     }
 
     fn choose_best_known_resource(
@@ -267,7 +276,7 @@ impl Robot {
         self.x.abs_diff(target.x) + self.y.abs_diff(target.y)
     }
 
-    fn walkable_neighbors(&self, map: &Map) -> Vec<Point> {
+    fn walkable_neighbors(&self, map: &Map, occupied: &HashSet<Point>) -> Vec<Point> {
         let mut neighbors = Vec::new();
         for (dx, dy) in [(0isize, -1isize), (1, 0), (0, 1), (-1, 0)] {
             let x = self.x as isize + dx;
@@ -277,7 +286,7 @@ impl Robot {
                     x: x as usize,
                     y: y as usize,
                 };
-                if map.is_walkable(point.x, point.y) {
+                if map.is_walkable(point.x, point.y) && !occupied.contains(&point) {
                     neighbors.push(point);
                 }
             }
@@ -285,7 +294,12 @@ impl Robot {
         neighbors
     }
 
-    fn next_step_towards(&self, map: &Map, goal: Point) -> Option<Point> {
+    fn next_step_towards(
+        &self,
+        map: &Map,
+        goal: Point,
+        occupied: &HashSet<Point>,
+    ) -> Option<Point> {
         if self.position() == goal {
             return None;
         }
@@ -303,6 +317,10 @@ impl Robot {
 
             for neighbor in neighbors_of(current, map) {
                 if came_from.contains_key(&neighbor) {
+                    continue;
+                }
+                
+                if neighbor != goal && occupied.contains(&neighbor) {
                     continue;
                 }
                 came_from.insert(neighbor, current);
@@ -328,9 +346,15 @@ impl Robot {
         None
     }
 
-    fn move_to(&mut self, next: Point) {
+    fn try_move_to(&mut self, next: Point, occupied: &mut HashSet<Point>) -> bool {
+        if occupied.contains(&next) {
+            return false;
+        }
+        occupied.remove(&self.position());
+        occupied.insert(next);
         self.x = next.x;
         self.y = next.y;
+        true
     }
 }
 
@@ -372,13 +396,27 @@ impl World {
         let base = map.base;
         let (sender, receiver) = mpsc::channel();
 
-        let robots = vec![
-            Robot::new(base.x, base.y, RobotType::Scout),
-            Robot::new(base.x, base.y, RobotType::Scout),
-            Robot::new(base.x, base.y, RobotType::Collector),
-            Robot::new(base.x, base.y, RobotType::Collector),
-            Robot::new(base.x, base.y, RobotType::Collector),
+        let spawn_offsets = [
+            (0isize, 0isize),
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
         ];
+        let types = [
+            RobotType::Scout,
+            RobotType::Scout,
+            RobotType::Collector,
+            RobotType::Collector,
+            RobotType::Collector,
+        ];
+
+        let mut robots = Vec::with_capacity(types.len());
+        for (offset, robot_type) in spawn_offsets.iter().zip(types.iter()) {
+            let x = (base.x as isize + offset.0).clamp(0, width as isize - 1) as usize;
+            let y = (base.y as isize + offset.1).clamp(0, height as isize - 1) as usize;
+            robots.push(Robot::new(x, y, *robot_type));
+        }
 
         Self {
             map,
@@ -416,9 +454,13 @@ impl World {
         // Copie en lecture seule pour éviter un conflit d'emprunt avec
         // l'itération mutable sur self.robots juste en dessous.
         let known = self.known_resources.clone();
+        
+        let mut occupied: HashSet<Point> = self.robots.iter().map(|r| r.position()).collect();
 
         for robot in &mut self.robots {
-            if let Some((energy, crystals)) = robot.update(&mut self.map, &known, &self.sender) {
+            if let Some((energy, crystals)) =
+                robot.update(&mut self.map, &known, &self.sender, &mut occupied)
+            {
                 self.total_energy = self.total_energy.saturating_add(energy);
                 self.total_crystals = self.total_crystals.saturating_add(crystals);
             }
