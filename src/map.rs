@@ -22,7 +22,8 @@ pub struct Map {
 
 impl Map {
     pub fn new(width: usize, height: usize) -> Self {
-        let perlin = Perlin::new(42);
+        let mut rng = rand::rng();
+        let perlin = Perlin::new(rng.random_range(0..u32::MAX));
         let mut grid = vec![vec![Tile::Empty; width]; height];
         let base = Point {
             x: width / 2,
@@ -60,7 +61,6 @@ impl Map {
         grid[base.y][base.x] = Tile::Base;
 
         // Placement des ressources (Énergie et Cristaux)
-        let mut rng = rand::rng();
         for _ in 0..24 {
             let rx = rng.random_range(0..width);
             let ry = rng.random_range(0..height);
