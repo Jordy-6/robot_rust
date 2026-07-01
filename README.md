@@ -4,9 +4,11 @@ Simulation temps réel en terminal (Ratatui) de robots autonomes qui explorent u
 
 ## Aperçu
 
-- Carte générée avec du bruit de Perlin (obstacles)
+- Carte générée avec du bruit de Perlin (seed aléatoire à chaque lancement)
 - 2 types de robots : **Scouts** (explorateurs) et **Collectors** (collecteurs)
-- Pathfinding BFS pour la navigation
+- Pathfinding BFS avec contournement dynamique des autres robots
+- Détection de collisions : deux robots ne peuvent pas occuper la même case
+- Partage asynchrone des ressources ET des obstacles découverts entre robots
 - Rendu terminal en couleur via Ratatui
 - Architecture concurrente (thread de simulation séparé du thread de rendu)
 
@@ -53,11 +55,12 @@ src/
 
 ### Concepts clés
 
-- **`Map`** : grille 2D de `Tile` (Empty, Obstacle, Energy, Crystal, Base)
-- **`Robot`** : position, type, mode (Exploring / ToResource / ReturningBase), cargo
-- **`World`** : orchestre la carte + les robots + les statistiques globales
+- **`Map`** : grille 2D de `Tile` (Empty, Obstacle, Energy, Crystal, Base). Le seed Perlin est tiré au hasard à chaque `Map::new`, donc chaque partie est différente
+- **`Robot`** : position, type, mode (Exploring / ToResource / ReturningBase), cargo. Les robots spawn à des positions distinctes autour de la base pour éviter tout chevauchement initial
+- **`World`** : orchestre la carte + les robots + les statistiques globales. Tient à jour `known_resources` et `known_obstacles` (agrégés depuis les messages)
 - **Concurrence** : `Arc<Mutex<World>>` partagé entre le thread de simulation (tick toutes les 120ms) et le thread principal (rendu + input)
-- **Communication inter-robots** : chaque robot envoie des `RobotMessage` (ResourceFound, ResourceDepleted) via un `mpsc::channel` plutôt que de modifier directement un état partagé ; `World` lit les messages reçus à chaque tick et met à jour `known_resources`
+- **Communication inter-robots** : chaque robot envoie des `RobotMessage` (`ResourceFound`, `ResourceDepleted`, `ObstacleFound`) via un `mpsc::channel` plutôt que de modifier directement un état partagé ; `World` lit les messages reçus à chaque tick et met à jour les connaissances partagées
+- **Collisions** : `World::tick` construit un `HashSet<Point>` des positions occupées avant la boucle des robots. Chaque déplacement passe par `try_move_to` (refuse si la case est déjà prise, met à jour le set). Le BFS filtre aussi les cases occupées pour trouver un chemin de contournement, tout en laissant la case cible atteignable (sinon la base occupée par un robot bloquerait tous les autres)
 
 ## Développement — workflow Git
 
@@ -83,14 +86,14 @@ cargo test             # lance les tests unitaires
 
 ## État actuel / Roadmap
 
-- [x] Génération de carte avec Perlin noise
+- [x] Génération de carte avec Perlin noise (seed aléatoire par run)
 - [x] Scouts : exploration + découverte de ressources
 - [x] Collectors : pathfinding BFS + collecte + retour base
 - [x] Rendu Ratatui en couleur
 - [x] Architecture concurrente (Arc/Mutex + threads)
-- [x] Communication asynchrone via channels (actuellement mémoire partagée)
-- [ ] Gestion des collisions entre robots
-- [ ] Scouts mémorisent les obstacles découverts
+- [x] Communication asynchrone via channels
+- [x] Partage des obstacles découverts entre robots (`ObstacleFound`)
+- [x] Gestion des collisions entre robots (snapshot d'occupation + BFS contournant)
 - [ ] Documentation des fonctions (rustdoc)
 - [ ] Tests unitaires
 - [ ] Statistiques avancées (ressources/seconde, état détaillé par robot)
