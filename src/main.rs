@@ -1,5 +1,6 @@
 mod map;
 mod robot;
+mod world;
 
 use crossterm::{
     event::{self, Event},
@@ -25,7 +26,8 @@ use std::{
 };
 
 use map::Tile;
-use robot::{RobotType, World};
+use robot::RobotType;
+use world::World;
 
 fn main() -> Result<(), io::Error> {
     // Configuration du terminal

@@ -30,15 +30,6 @@ impl Map {
             y: height / 2,
         };
 
-        // Génération des obstacles via le bruit de Perlin
-        // for y in 0..height {
-        //     for x in 0..width {
-        //         let noise_value = perlin.get([x as f64 * 0.1, y as f64 * 0.1]);
-        //         if noise_value > 0.25 {
-        //             grid[y][x] = Tile::Obstacle;
-        //         }
-        //     }
-        // }
         for (y, row) in grid.iter_mut().enumerate() {
             for (x, tile) in row.iter_mut().enumerate() {
                 let noise_value = perlin.get([x as f64 * 0.1, y as f64 * 0.1]);
